@@ -870,6 +870,13 @@ gantt
 | **BR-19** | Multi-Stop Dwell Cascade | Prior Store Dwell > 60 Min | Late arrivals where the same plate experienced >60 min dwell at an earlier company store are tagged `POSSIBLE_CASCADE` for dispute review. |
 | **BR-20** | Attributable Evidence Rule | Two-Sided System Evidence | Supplier penalties are enforced solely through dock staff arrival timestamps or daily reconciliation outcomes; manual SM entries alone cannot produce violations. |
 | **BR-21** | Operating Timezone | `Asia/Manila` (UTC+8) | All system timestamps, cutoffs, window schedules, and audit records operate strictly in Philippine Standard Time. |
+| **BR-22** | Unload Start Bay Door Timestamping | Bay Door Opening | System stamps `unload_start_time` upon physical truck bay door opening to isolate dock queue dwell from unloading execution. |
+| **BR-23** | Receiving Completion Timestamping | Receiving Finalization | System stamps `receiving_completed_time` upon physical verification completion. |
+| **BR-24** | Disputed Receiving Outcome Logging | Full / Partial / Full Reject | Receiving outcome code and rejection reason codes are logged with mandatory audit notes for supplier transparency. |
+| **BR-25** | Emergency Capacity Overbooking | +1 Truck per Window | Store Manager can exceed effective capacity by +1 truck for perishable or critical deliveries with mandatory audit justification. |
+| **BR-26** | Bay Door Assignment & Queue Order | Arrival & Schedule Order | Assigned Staff assigns trucks to available dock bay doors based on presentation sequence and scheduled window slot. |
+| **BR-27** | Soft Vehicle Plate Mismatch Verification | Audit Warning (Non-blocking) | Discrepancies between declared plate and physical truck prompt a confirmation alert and log an audit record without blocking unloading. |
+| **BR-28** | Supplier No-Show Penalty Confirmation | Two-Sided GRN Verification | Provisional no-shows are finalized as confirmed violations only after midnight GRN reconciliation verifies zero goods were received. |
 
 ---
 
@@ -945,9 +952,73 @@ Every midnight (00:30 `Asia/Manila`), the automated reconciliation job parses re
 
 ---
 
-## 10. Stakeholder Decision Log
+## 10. Feature PRD Breakdown & Traceability Matrix
 
-### 10.1 Core Architectural Decisions (Updated for v1.0)
+To transition this master architectural specification into independent, engineering-ready delivery streams, VendorLane decomposes Phase 1 capabilities into six standalone Feature Product Requirements Documents (PRDs) governed by the `breakdown-feature-prd` standard. The complete documentation suite is housed under [`docs/ways-of-work/plan/dock-appointment-scheduling/`](ways-of-work/plan/dock-appointment-scheduling/README.md).
+
+### 10.1 Feature Documentation Suite Index
+
+| Feature Domain | Documentation Path | Primary Responsibilities | Core User Stories | Key Data Schemas |
+|---|---|---|---|---|
+| **PO Query & Selection** | [`po-query-and-selection/prd.md`](ways-of-work/plan/dock-appointment-scheduling/po-query-and-selection/prd.md) | External ERP PO retrieval by `vendor_code`, 15-minute TTL caching, single destination store validation, delivery date validity checking. | US-01 | In-memory cache, `ExternalPurchaseOrderDto`, `PoItemDto` |
+| **Store Staff Roster** | [`store-staff-roster/prd.md`](ways-of-work/plan/dock-appointment-scheduling/store-staff-roster/prd.md) | Store Manager management of authorized store dock staff, corporate user validation, multi-tenant store isolation, instant privilege revocation. | US-06 | `store_staff` |
+| **Arrival Window Booking** | [`arrival-window-booking/prd.md`](ways-of-work/plan/dock-appointment-scheduling/arrival-window-booking/prd.md) | Effective capacity computation (`Base - Reserved DC - Scenarios`), 24h store lead time cutoff, 14-day booking horizon, slot reservation, reference code generation (`BK-YYYYMM-XXXX`). | US-02, US-03 | `bookings`, `booking_po_items` |
+| **Dock Arrival & Receiving** | [`dock-arrival-and-receiving/prd.md`](ways-of-work/plan/dock-appointment-scheduling/dock-arrival-and-receiving/prd.md) | Live Today's Dock Arrivals board, server-side timestamping (`Asia/Manila`), soft plate mismatch detection, unbooked truck registration, bay door unload tracking, and receiving outcome recording. | US-04, US-07 | `bookings`, `audit_log` |
+| **Dual-Engine Invoice OCR** | [`dual-engine-invoice-ocr/prd.md`](ways-of-work/plan/dock-appointment-scheduling/dual-engine-invoice-ocr/prd.md) | On-demand cascading scanning (Apache PDFBox digital text fast path < 2.0s, Leptonica + Tess4J raster OCR fallback < 5.0s), coordinate template & regex parser, confidence scoring, staff review protocol. | US-02, US-05 | `invoice_attachments`, `extracted_invoice_data` |
+| **Daily Receiving Reconciliation** | [`daily-receiving-reconciliation/prd.md`](ways-of-work/plan/dock-appointment-scheduling/daily-receiving-reconciliation/prd.md) | Midnight batch reconciliation job (00:30 UTC+8), two-sided matching matrix between store GRNs and bookings, breach attribution, supplier violation tagging. | US-08 | `reconciliation_records` |
+
+For an architectural overview and cross-feature orchestration flows, see the [Documentation Suite Index](ways-of-work/plan/dock-appointment-scheduling/README.md).
+
+### 10.2 System-Level Business Rules Traceability Matrix
+
+Every operational rule from Section 6.1 (`BR-01` through `BR-28`) is bidirectionally mapped to one or more child Feature PRDs:
+
+| Rule ID | Operational Rule | Parameter / Threshold | Primary Feature PRD Specification | System Enforcement Mechanism |
+|---|---|---|---|---|
+| **BR-01** | Minimum Lead Time / Supplier Cutoff | 24 Hours (Store Default) | [`arrival-window-booking/prd.md`](ways-of-work/plan/dock-appointment-scheduling/arrival-window-booking/prd.md) | Booking window validation blocks reservations inside lead time without SM approval. |
+| **BR-02** | Booking Horizon | 14 Calendar Days | [`arrival-window-booking/prd.md`](ways-of-work/plan/dock-appointment-scheduling/arrival-window-booking/prd.md) | Slot generation logic bounds open windows to `[current_date, current_date + 14 days]`. |
+| **BR-03** | Booking Composition | 1 Truck = 1 Unit | [`arrival-window-booking/prd.md`](ways-of-work/plan/dock-appointment-scheduling/arrival-window-booking/prd.md) | Slot decrement decrements exactly 1 capacity unit per confirmed booking. |
+| **BR-04** | Maximum POs per Booking | 15 POs (Configurable) | [`po-query-and-selection/prd.md`](ways-of-work/plan/dock-appointment-scheduling/po-query-and-selection/prd.md) | Selection validator rejects requests containing > 15 distinct PO numbers. |
+| **BR-05** | Split PO Partial Booking Cap | Max 3 Active Partials | [`arrival-window-booking/prd.md`](ways-of-work/plan/dock-appointment-scheduling/arrival-window-booking/prd.md) | Booking service rejects new partial bookings when active unfulfilled count >= 3. |
+| **BR-06** | Supplier Daily Store Booking Cap | Configurable per store | [`arrival-window-booking/prd.md`](ways-of-work/plan/dock-appointment-scheduling/arrival-window-booking/prd.md) | Anti-hoarding check counts vendor bookings per store date against store cap. |
+| **BR-07** | PO Validity Date Enforcement | `validity_start` to `validity_end` | [`po-query-and-selection/prd.md`](ways-of-work/plan/dock-appointment-scheduling/po-query-and-selection/prd.md), [`arrival-window-booking/prd.md`](ways-of-work/plan/dock-appointment-scheduling/arrival-window-booking/prd.md) | Validates that booking date falls within the intersection of all selected PO validity ranges. |
+| **BR-08** | Effective Capacity Formula | `Base - Reserved - Scenario` | [`arrival-window-booking/prd.md`](ways-of-work/plan/dock-appointment-scheduling/arrival-window-booking/prd.md) | Engine evaluates effective capacity formula before offering slot availability. |
+| **BR-09** | Early Arrival Allowance | 30 Minutes Prior | [`dock-arrival-and-receiving/prd.md`](ways-of-work/plan/dock-appointment-scheduling/dock-arrival-and-receiving/prd.md) | Arrival check-in within window start - 30 min marked `ON_TIME`; directed to staging bay. |
+| **BR-10** | No-Show Grace Period | Window End + 2 Hours | [`dock-arrival-and-receiving/prd.md`](ways-of-work/plan/dock-appointment-scheduling/dock-arrival-and-receiving/prd.md), [`daily-receiving-reconciliation/prd.md`](ways-of-work/plan/dock-appointment-scheduling/daily-receiving-reconciliation/prd.md) | Unarrived booking marked `NO_SHOW_PROVISIONAL` when current time > window end + 2 hours. |
+| **BR-11** | Late Cancellation Period | Within 12 Hours of Cutoff | [`arrival-window-booking/prd.md`](ways-of-work/plan/dock-appointment-scheduling/arrival-window-booking/prd.md) | Cancellations inside 12h before cutoff recorded with `LATE_CANCELLATION` audit tag. |
+| **BR-12** | Company Date/Time Changes | Prior to Window Start Only | [`arrival-window-booking/prd.md`](ways-of-work/plan/dock-appointment-scheduling/arrival-window-booking/prd.md) | Internal company reschedule endpoints lock once window start is reached. |
+| **BR-13** | Supplier Response to Company Changes | 2 Hours Prior to Window | [`arrival-window-booking/prd.md`](ways-of-work/plan/dock-appointment-scheduling/arrival-window-booking/prd.md) | Unacknowledged earlier reschedules automatically excused 2h before window. |
+| **BR-14** | Store Manager Overbooking | +1 Truck per Window | [`arrival-window-booking/prd.md`](ways-of-work/plan/dock-appointment-scheduling/arrival-window-booking/prd.md) | Capacity engine allows SM role to override slot ceiling by +1 with mandatory reason. |
+| **BR-15** | Urgent Request Expiry | 1 Hour Prior to Window | [`arrival-window-booking/prd.md`](ways-of-work/plan/dock-appointment-scheduling/arrival-window-booking/prd.md) | Background scheduler expires pending urgent requests 1 hour before window start. |
+| **BR-16** | Disruption Scenario Activation | Start Time >= Current Time | [`arrival-window-booking/prd.md`](ways-of-work/plan/dock-appointment-scheduling/arrival-window-booking/prd.md) | API blocks backdated scenario creation; triggers 1-hour SM selection displacement window. |
+| **BR-17** | Dock Arrival Verification | Physical Vehicle Presentation | [`dock-arrival-and-receiving/prd.md`](ways-of-work/plan/dock-appointment-scheduling/dock-arrival-and-receiving/prd.md), [`store-staff-roster/prd.md`](ways-of-work/plan/dock-appointment-scheduling/store-staff-roster/prd.md) | Dock workstation check-in stamps server timestamp; requires authorized store staff user. |
+| **BR-18** | Offline Timestamp Tolerance | 5 Minutes Maximum | [`dock-arrival-and-receiving/prd.md`](ways-of-work/plan/dock-appointment-scheduling/dock-arrival-and-receiving/prd.md) | Sync endpoint compares client timestamp with server clock; flags drift > 5 min. |
+| **BR-19** | Multi-Stop Dwell Cascade | Prior Store Dwell > 60 Min | [`dock-arrival-and-receiving/prd.md`](ways-of-work/plan/dock-appointment-scheduling/dock-arrival-and-receiving/prd.md) | Vehicle plate history query flags late arrival as `POSSIBLE_CASCADE` if previous dwell exceeded 60m. |
+| **BR-20** | Attributable Evidence Rule | Two-Sided System Evidence | [`dock-arrival-and-receiving/prd.md`](ways-of-work/plan/dock-appointment-scheduling/dock-arrival-and-receiving/prd.md), [`daily-receiving-reconciliation/prd.md`](ways-of-work/plan/dock-appointment-scheduling/daily-receiving-reconciliation/prd.md) | Violation tags generated strictly from digital arrival timestamps or reconciliation records. |
+| **BR-21** | Operating Timezone | `Asia/Manila` (UTC+8) | All Feature PRDs | All time conversions, cutoff validations, and batch runs evaluate in `Asia/Manila`. |
+| **BR-22** | Unload Start Bay Door Timestamping | Bay Door Opening | [`dock-arrival-and-receiving/prd.md`](ways-of-work/plan/dock-appointment-scheduling/dock-arrival-and-receiving/prd.md) | Station records `unload_start_time` upon bay door assignment to track dock dwell. |
+| **BR-23** | Receiving Completion Timestamping | Receiving Finalization | [`dock-arrival-and-receiving/prd.md`](ways-of-work/plan/dock-appointment-scheduling/dock-arrival-and-receiving/prd.md) | Station records `receiving_completed_time` upon physical pallet completion. |
+| **BR-24** | Disputed Receiving Outcome Logging | Full / Partial / Full Reject | [`dock-arrival-and-receiving/prd.md`](ways-of-work/plan/dock-appointment-scheduling/dock-arrival-and-receiving/prd.md) | Stores rejection reason codes and mandatory notes in `bookings` and `audit_log`. |
+| **BR-25** | Emergency Capacity Overbooking | +1 Truck per Window | [`arrival-window-booking/prd.md`](ways-of-work/plan/dock-appointment-scheduling/arrival-window-booking/prd.md) | SM emergency override protocol with mandatory audit justification. |
+| **BR-26** | Bay Door Assignment & Queue Order | Arrival & Schedule Order | [`dock-arrival-and-receiving/prd.md`](ways-of-work/plan/dock-appointment-scheduling/dock-arrival-and-receiving/prd.md) | Queue manager prioritizes scheduled on-time arrivals over early/late arrivals. |
+| **BR-27** | Soft Vehicle Plate Mismatch Verification | Audit Warning (Non-blocking) | [`dock-arrival-and-receiving/prd.md`](ways-of-work/plan/dock-appointment-scheduling/dock-arrival-and-receiving/prd.md) | Plate comparison mismatch logs audit alert but allows check-in without blocking dock. |
+| **BR-28** | Supplier No-Show Penalty Confirmation | Two-Sided GRN Verification | [`daily-receiving-reconciliation/prd.md`](ways-of-work/plan/dock-appointment-scheduling/daily-receiving-reconciliation/prd.md) | Midnight job verifies zero GRN matches before confirming supplier no-show penalties. |
+
+### 10.3 High-Level Metric Traceability (G1 through G5)
+
+| Metric | Target | System Metric Definition | Owning Feature PRDs | Validation & Audit Method |
+|---|---|---|---|---|
+| **G1** | 100% | Store arrivals mapped to booked windows | [`arrival-window-booking/prd.md`](ways-of-work/plan/dock-appointment-scheduling/arrival-window-booking/prd.md), [`dock-arrival-and-receiving/prd.md`](ways-of-work/plan/dock-appointment-scheduling/dock-arrival-and-receiving/prd.md) | Ratio of arrivals with valid booking ID vs total arrived trucks; unbooked trucks registered via BR-14. |
+| **G2** | >= 90% | Schedule adherence (on-time arrivals) | [`dock-arrival-and-receiving/prd.md`](ways-of-work/plan/dock-appointment-scheduling/dock-arrival-and-receiving/prd.md) | Arrival timestamp within `[window_start - 30m, window_end]`. |
+| **G3** | >= 95% | Daily receiving (GRN) records matched against bookings | [`daily-receiving-reconciliation/prd.md`](ways-of-work/plan/dock-appointment-scheduling/daily-receiving-reconciliation/prd.md) | Midnight reconciliation job match rate of store GRN line items to VendorLane booking records. |
+| **G4** | 100% | Delivery penalties backed by two-sided evidence | [`dock-arrival-and-receiving/prd.md`](ways-of-work/plan/dock-appointment-scheduling/dock-arrival-and-receiving/prd.md), [`daily-receiving-reconciliation/prd.md`](ways-of-work/plan/dock-appointment-scheduling/daily-receiving-reconciliation/prd.md) | Automated validation ensuring zero penalty tags exist without a corresponding dock timestamp or reconciled GRN breach record. |
+| **G5** | < 2.0s (Digital)<br/>< 5.0s (Raster) | On-demand OCR turnaround & >= 92% key-field accuracy | [`dual-engine-invoice-ocr/prd.md`](ways-of-work/plan/dock-appointment-scheduling/dual-engine-invoice-ocr/prd.md) | Server timer instrumentation measuring PDFBox extraction and Tess4J OCR fallback; extraction accuracy against 100-doc benchmark suite. |
+
+---
+
+## 11. Stakeholder Decision Log
+
+### 11.1 Core Architectural Decisions (Updated for v1.0)
 
 | Decision ID | Operational Topic | Decision Summary | Status in v1.0 | Rationale & Historical Evolution |
 |---|---|---|---|---|
@@ -1002,7 +1073,7 @@ Every midnight (00:30 `Asia/Manila`), the automated reconciliation job parses re
 
 ---
 
-## 11. Open Questions & Stakeholder Resolutions
+## 12. Open Questions & Stakeholder Resolutions
 
 | Question ID | Topic & Core Question | Owner | Status | Final Resolution in v1.0 |
 |---|---|---|---|---|
@@ -1025,7 +1096,7 @@ Every midnight (00:30 `Asia/Manila`), the automated reconciliation job parses re
 
 ---
 
-## 12. Revision History
+## 13. Revision History
 
 | Version | Release Date | Author / Requester | Key Changes & Operational Evolution |
 |---|---|---|---|
@@ -1033,3 +1104,4 @@ Every midnight (00:30 `Asia/Manila`), the automated reconciliation job parses re
 | **0.2** | September 16, 2026 | Architecture Team | Round 1 review: Introduced decisions D1–D23, split PO partial bookings, per-store lead times, overbooking rules, and pilot outline. |
 | **0.3** | September 16, 2026 | Stakeholder Review | Round 2 review: Added D24–D45, driver geo check-in, daily GRN reconciliation, urgent bookings, booking caps, reserved DC capacity, and 16 open questions. |
 | **1.0** | September 28, 2026 | Architecture & Process Owners | **Approved v1.0 Specification**: Formalized PO-first booking flow (US-01), on-demand invoice OCR scanning (US-02, US-05, Section 3), complete elimination of Driver and Store Receiver roles, introduction of Store-Scoped Assigned Staff managed by Store Manager (US-04, US-06), external PO API on-demand caching (KD-5), re-aligned compliance outcomes (Section 7), updated business rules BR-01 to BR-21, and closed blocking open questions. |
+| **1.1** | September 29, 2026 | Architecture Team | **Feature PRD Breakdown & Traceability Matrix**: Added Section 10 mapping 6 granular child feature PRDs under `/docs/ways-of-work/plan/dock-appointment-scheduling/`, added business rules BR-22 through BR-28 to Section 6.1, and established complete bidirectional traceability for G1–G5 metrics and engineering contracts. |
